@@ -85,6 +85,7 @@ public class AudioManager {
 
         // Start engine and enable AEC
         // Start engine and enable AEC
+        // Start engine and enable AEC
         do {
             if enableAEC {
                 try inputNode.setVoiceProcessingEnabled(true)
@@ -96,14 +97,13 @@ public class AudioManager {
             print("✅ Audio engine started successfully")
 
             // 🔥 Warm-up fix: prime player node with silence
-            if let format = audioFormat {
-                let silentBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
-                silentBuffer.frameLength = 4800
-                memset(silentBuffer.floatChannelData!.pointee, 0, Int(4800 * MemoryLayout<Float>.size))
-                playerNode.scheduleBuffer(silentBuffer, completionHandler: nil)
-                playerNode.play()
-                print("✅ Warm-up silent buffer played to stabilize engine")
-            }
+            let format = audioFormat
+            let silentBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
+            silentBuffer.frameLength = 4800
+            memset(silentBuffer.floatChannelData!.pointee, 0, Int(4800 * MemoryLayout<Float>.size))
+            playerNode.scheduleBuffer(silentBuffer, completionHandler: nil)
+            playerNode.play()
+            print("✅ Warm-up silent buffer played to stabilize engine")
 
         } catch {
             print("❌ Failed to start audio engine: \(error)")
@@ -112,6 +112,7 @@ public class AudioManager {
                 self?.eventSink?(["type": "error", "message": "Engine start error: \(error.localizedDescription)"])
             }
         }
+
     }
 
         private func configureAudioSession() {
