@@ -389,8 +389,8 @@ public class AudioManager {
         // -------------------------------------------------------------------------
         // 🧩 Gemini stutter-fix buffering
         // Keep a small pre-roll buffer before the first playback to avoid underrun
-        static var bufferedChunks: [AVAudioPCMBuffer] = []
-        static var isPrimed: Bool = false
+        // static var bufferedChunks: [AVAudioPCMBuffer] = []
+        // static var isPrimed: Bool = false
 
         if !isPrimed {
             bufferedChunks.append(outputBuffer)
