@@ -373,7 +373,15 @@ public class AudioManager {
         guard status != .error, outputBuffer.frameLength > 0 else { return }
 
         playerNode.scheduleBuffer(outputBuffer, completionHandler: nil)
-        if !playerNode.isPlaying { playerNode.play() }
+
+// Add a slight warm-up delay before the very first play()
+// so CoreAudio has time to fill the output buffer and avoid the stutter.
+        if !playerNode.isPlaying {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.playerNode.play()
+            }
+        }
+
     }
     
     public func stopPlayback() {
