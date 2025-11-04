@@ -108,13 +108,17 @@ public class AudioManager {
         
         do {
             // Set category first
-            try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .mixWithOthers, .allowBluetoothA2DP])
+            try session.setCategory(.playAndRecord,
+                                    mode: .voiceChat,
+                                    options: [.defaultToSpeaker, .mixWithOthers, .allowBluetoothA2DP])
             print("✅ Audio category set successfully")
             
             // Set preferred settings
-            try session.setPreferredSampleRate(48000.0)
-            try session.setPreferredIOBufferDuration(0.005)
-            
+            // Gemini bots stream 24 kHz PCM → match hardware to 24 kHz for smoother startup
+            try session.setPreferredSampleRate(24_000)
+            try session.setPreferredIOBufferDuration(0.01)
+
+
             // Activate session
             try session.setActive(true, options: [.notifyOthersOnDeactivation])
             print("✅ Audio session activated")
