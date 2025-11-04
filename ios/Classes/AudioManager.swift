@@ -28,7 +28,8 @@ public class AudioManager {
     private var musicPositionTimer: Timer?
     public var musicIsPlaying = false
     public var eventSink: FlutterEventSink?
-    
+    private var bufferedChunks: [Data] = []
+    private var isPrimed = false
     // CRITICAL FIX: Track engine setup state
     private var isEngineSetup = false
     
@@ -334,7 +335,9 @@ public class AudioManager {
     }
     
     // AudioManager.swift
+    // Gemini stutter-free version
     public func playAudioChunk(audioData: Data) throws {
+        // Ensure engine and converters are ready
         guard audioEngine.isRunning, let converter = playbackConverter else {
             throw NSError(domain: "AudioManager", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Engine or converter unavailable"])
@@ -354,6 +357,7 @@ public class AudioManager {
         let frameCount = AVAudioFrameCount(audioData.count / bytesPerFrame)
         guard frameCount > 0 else { return }
 
+        // --- Decode Int16 PCM to buffer
         guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: wsFormat, frameCapacity: frameCount) else {
             throw NSError(domain: "AudioManager", code: -3,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to create input buffer"])
@@ -366,7 +370,7 @@ public class AudioManager {
             )
         }
 
-        // Safe output capacity (never 0)
+        // --- Convert to output format (48 kHz float)
         let ratio = outFormat.sampleRate / wsFormat.sampleRate
         let outCap = AVAudioFrameCount(max(1, Int((Double(frameCount) * ratio).rounded())))
         guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: outCap) else {
@@ -382,18 +386,49 @@ public class AudioManager {
         if let error = error { throw error }
         guard status != .error, outputBuffer.frameLength > 0 else { return }
 
+        // -------------------------------------------------------------------------
+        // 🧩 Gemini stutter-fix buffering
+        // Keep a small pre-roll buffer before the first playback to avoid underrun
+        static var bufferedChunks: [AVAudioPCMBuffer] = []
+        static var isPrimed: Bool = false
+
+        if !isPrimed {
+            bufferedChunks.append(outputBuffer)
+            let minBufferCount = 2  // wait for ~200 ms of audio before starting
+
+            if bufferedChunks.count < minBufferCount {
+                // Not enough buffered yet → wait for next chunk
+                return
+            }
+
+            print("🎧 Priming player with \(bufferedChunks.count) chunks before playback")
+            isPrimed = true
+            for buf in bufferedChunks {
+                playerNode.scheduleBuffer(buf, completionHandler: nil)
+            }
+            bufferedChunks.removeAll()
+
+            // Delay start very slightly so CoreAudio fills output buffer
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self.playerNode.play()
+                print("✅ Player started after priming delay")
+            }
+            return
+        }
+        // -------------------------------------------------------------------------
+
+        // Schedule subsequent buffers normally once primed
         playerNode.scheduleBuffer(outputBuffer, completionHandler: nil)
 
-// Add a slight warm-up delay before the very first play()
-// so CoreAudio has time to fill the output buffer and avoid the stutter.
+        // Safety: if playback ever stops unexpectedly, resume it
         if !playerNode.isPlaying {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 self.playerNode.play()
             }
         }
-
     }
-    
+
+
     public func stopPlayback() {
         playerNode.stop()
         playerNode.reset()
