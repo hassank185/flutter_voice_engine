@@ -336,6 +336,7 @@ public class AudioManager {
     
     // AudioManager.swift
     // Gemini stutter-free version
+    // Gemini stutter-free version (final stable)
     public func playAudioChunk(audioData: Data) throws {
         // Ensure engine and converters are ready
         guard audioEngine.isRunning, let converter = playbackConverter else {
@@ -347,7 +348,53 @@ public class AudioManager {
                           userInfo: [NSLocalizedDescriptionKey: "Formats not initialized"])
         }
 
-        // Validate chunk size → whole frames and non-zero
+        // --- Step 1: Buffer early chunks to avoid underrun
+        if !isPrimed {
+            bufferedChunks.append(audioData)
+            let minBufferCount = 2 // Wait for ~200 ms of buffered data
+
+            if bufferedChunks.count < minBufferCount {
+                // Wait until enough chunks are buffered
+                return
+            }
+
+            print("🎧 Priming player with \(bufferedChunks.count) buffered chunks before playback")
+            isPrimed = true
+
+            // Play all buffered chunks first
+            for data in bufferedChunks {
+                try processAndScheduleChunk(data, converter: converter, wsFormat: wsFormat, outFormat: outFormat)
+            }
+            bufferedChunks.removeAll()
+
+            // Small startup delay before playing
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self.playerNode.play()
+                print("✅ Player started after priming delay")
+            }
+
+            return
+        }
+
+        // --- Step 2: Schedule subsequent chunks normally
+        try processAndScheduleChunk(audioData, converter: converter, wsFormat: wsFormat, outFormat: outFormat)
+
+        // Safety: if playback ever stops unexpectedly, resume it
+        if !playerNode.isPlaying {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.playerNode.play()
+            }
+        }
+    }
+
+    // MARK: - Helper for PCM conversion & scheduling
+    private func processAndScheduleChunk(
+        _ audioData: Data,
+        converter: AVAudioConverter,
+        wsFormat: AVAudioFormat,
+        outFormat: AVAudioFormat
+    ) throws {
+        // Validate chunk size
         let bytesPerFrame = MemoryLayout<Int16>.size * Int(wsFormat.channelCount)
         guard audioData.count >= bytesPerFrame, audioData.count % bytesPerFrame == 0 else {
             throw NSError(domain: "AudioManager", code: -10,
@@ -357,7 +404,7 @@ public class AudioManager {
         let frameCount = AVAudioFrameCount(audioData.count / bytesPerFrame)
         guard frameCount > 0 else { return }
 
-        // --- Decode Int16 PCM to buffer
+        // Decode Int16 PCM
         guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: wsFormat, frameCapacity: frameCount) else {
             throw NSError(domain: "AudioManager", code: -3,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to create input buffer"])
@@ -370,7 +417,7 @@ public class AudioManager {
             )
         }
 
-        // --- Convert to output format (48 kHz float)
+        // Convert to output (48 kHz Float32)
         let ratio = outFormat.sampleRate / wsFormat.sampleRate
         let outCap = AVAudioFrameCount(max(1, Int((Double(frameCount) * ratio).rounded())))
         guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: outCap) else {
@@ -386,46 +433,8 @@ public class AudioManager {
         if let error = error { throw error }
         guard status != .error, outputBuffer.frameLength > 0 else { return }
 
-        // -------------------------------------------------------------------------
-        // 🧩 Gemini stutter-fix buffering
-        // Keep a small pre-roll buffer before the first playback to avoid underrun
-        // static var bufferedChunks: [AVAudioPCMBuffer] = []
-        // static var isPrimed: Bool = false
-
-        if !isPrimed {
-            bufferedChunks.append(outputBuffer)
-            let minBufferCount = 2  // wait for ~200 ms of audio before starting
-
-            if bufferedChunks.count < minBufferCount {
-                // Not enough buffered yet → wait for next chunk
-                return
-            }
-
-            print("🎧 Priming player with \(bufferedChunks.count) chunks before playback")
-            isPrimed = true
-            for buf in bufferedChunks {
-                playerNode.scheduleBuffer(buf, completionHandler: nil)
-            }
-            bufferedChunks.removeAll()
-
-            // Delay start very slightly so CoreAudio fills output buffer
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                self.playerNode.play()
-                print("✅ Player started after priming delay")
-            }
-            return
-        }
-        // -------------------------------------------------------------------------
-
-        // Schedule subsequent buffers normally once primed
+        // Schedule the converted buffer for playback
         playerNode.scheduleBuffer(outputBuffer, completionHandler: nil)
-
-        // Safety: if playback ever stops unexpectedly, resume it
-        if !playerNode.isPlaying {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.playerNode.play()
-            }
-        }
     }
 
 
