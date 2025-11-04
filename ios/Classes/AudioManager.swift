@@ -335,10 +335,20 @@ public class AudioManager {
     }
     
     // AudioManager.swift
-    // Gemini stutter-free version
-    // Gemini stutter-free version (final stable)
+    // MARK: - Debug-instrumented Gemini playback
     public func playAudioChunk(audioData: Data) throws {
-        // Ensure engine and converters are ready
+        func ts(_ label: String) {
+            let now = String(format: "%.3f", CFAbsoluteTimeGetCurrent())
+            print("⏱️ [\(now)] \(label)")
+        }
+
+        // 🔹 0. Log chunk receipt
+        ts("A – received chunk (\(audioData.count) bytes)")
+        if !isPrimed {
+            print("   Buffered so far: \(bufferedChunks.count) chunks")
+        }
+
+        // 🔹 1. Ensure engine/converters ready
         guard audioEngine.isRunning, let converter = playbackConverter else {
             throw NSError(domain: "AudioManager", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Engine or converter unavailable"])
@@ -348,53 +358,7 @@ public class AudioManager {
                           userInfo: [NSLocalizedDescriptionKey: "Formats not initialized"])
         }
 
-        // --- Step 1: Buffer early chunks to avoid underrun
-        if !isPrimed {
-            bufferedChunks.append(audioData)
-            let minBufferCount = 2 // Wait for ~200 ms of buffered data
-
-            if bufferedChunks.count < minBufferCount {
-                // Wait until enough chunks are buffered
-                return
-            }
-
-            print("🎧 Priming player with \(bufferedChunks.count) buffered chunks before playback")
-            isPrimed = true
-
-            // Play all buffered chunks first
-            for data in bufferedChunks {
-                try processAndScheduleChunk(data, converter: converter, wsFormat: wsFormat, outFormat: outFormat)
-            }
-            bufferedChunks.removeAll()
-
-            // Small startup delay before playing
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                self.playerNode.play()
-                print("✅ Player started after priming delay")
-            }
-
-            return
-        }
-
-        // --- Step 2: Schedule subsequent chunks normally
-        try processAndScheduleChunk(audioData, converter: converter, wsFormat: wsFormat, outFormat: outFormat)
-
-        // Safety: if playback ever stops unexpectedly, resume it
-        if !playerNode.isPlaying {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.playerNode.play()
-            }
-        }
-    }
-
-    // MARK: - Helper for PCM conversion & scheduling
-    private func processAndScheduleChunk(
-        _ audioData: Data,
-        converter: AVAudioConverter,
-        wsFormat: AVAudioFormat,
-        outFormat: AVAudioFormat
-    ) throws {
-        // Validate chunk size
+        // 🔹 2. Validate chunk size
         let bytesPerFrame = MemoryLayout<Int16>.size * Int(wsFormat.channelCount)
         guard audioData.count >= bytesPerFrame, audioData.count % bytesPerFrame == 0 else {
             throw NSError(domain: "AudioManager", code: -10,
@@ -404,7 +368,7 @@ public class AudioManager {
         let frameCount = AVAudioFrameCount(audioData.count / bytesPerFrame)
         guard frameCount > 0 else { return }
 
-        // Decode Int16 PCM
+        // 🔹 3. Decode Int16 PCM → buffer
         guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: wsFormat, frameCapacity: frameCount) else {
             throw NSError(domain: "AudioManager", code: -3,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to create input buffer"])
@@ -417,7 +381,7 @@ public class AudioManager {
             )
         }
 
-        // Convert to output (48 kHz Float32)
+        // 🔹 4. Convert to output format (48k Float32)
         let ratio = outFormat.sampleRate / wsFormat.sampleRate
         let outCap = AVAudioFrameCount(max(1, Int((Double(frameCount) * ratio).rounded())))
         guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: outCap) else {
@@ -433,9 +397,88 @@ public class AudioManager {
         if let error = error { throw error }
         guard status != .error, outputBuffer.frameLength > 0 else { return }
 
-        // Schedule the converted buffer for playback
+        ts("B – conversion done, frames: \(outputBuffer.frameLength)")
+
+        // ---------------------------------------------------------------------
+        // 🧩 Gemini debug pre-buffering
+        if !isPrimed {
+            bufferedChunks.append(audioData)
+
+            // Estimate total buffered ms
+            let bufferedMs = bufferedChunks
+            .map { Double($0.count) / (2.0 * 24000.0) * 1000.0 } // bytes→ms
+            .reduce(0, +)
+            ts("C – buffering \(Int(bufferedMs)) ms (\(bufferedChunks.count) chunks)")
+
+            if bufferedMs < 300 {
+                // Wait until ≥300 ms audio buffered
+                return
+            }
+
+            ts("🎧 D – priming with \(Int(bufferedMs)) ms of data")
+            isPrimed = true
+
+            for data in bufferedChunks {
+                try processAndScheduleChunk(data, converter: converter, wsFormat: wsFormat, outFormat: outFormat)
+            }
+            bufferedChunks.removeAll()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                ts("E – starting playerNode.play() (delay warm-up)")
+                self.playerNode.play()
+            }
+            return
+        }
+        // ---------------------------------------------------------------------
+
+        // 🔹 5. Schedule normal playback
+        ts("F – scheduling buffer, playerNode.isPlaying=\(playerNode.isPlaying)")
+        playerNode.scheduleBuffer(outputBuffer, completionHandler: nil)
+
+        if !playerNode.isPlaying {
+            ts("G – playerNode not playing, scheduling safety restart")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.playerNode.play()
+                ts("H – safety play() executed")
+            }
+        }
+    }
+
+// MARK: - Helper for conversion
+    private func processAndScheduleChunk(
+        _ audioData: Data,
+        converter: AVAudioConverter,
+        wsFormat: AVAudioFormat,
+        outFormat: AVAudioFormat
+    ) throws {
+        let bytesPerFrame = MemoryLayout<Int16>.size * Int(wsFormat.channelCount)
+        let frameCount = AVAudioFrameCount(audioData.count / bytesPerFrame)
+        guard frameCount > 0 else { return }
+
+        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: wsFormat, frameCapacity: frameCount) else { return }
+        inputBuffer.frameLength = frameCount
+        audioData.withUnsafeBytes { raw in
+            inputBuffer.int16ChannelData?.pointee.update(
+                from: raw.baseAddress!.assumingMemoryBound(to: Int16.self),
+                count: Int(frameCount * wsFormat.channelCount)
+            )
+        }
+
+        let ratio = outFormat.sampleRate / wsFormat.sampleRate
+        let outCap = AVAudioFrameCount(max(1, Int((Double(frameCount) * ratio).rounded())))
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: outCap) else { return }
+
+        var error: NSError?
+        let status = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+            outStatus.pointee = .haveData
+            return inputBuffer
+        }
+        if let error = error { throw error }
+        guard status != .error, outputBuffer.frameLength > 0 else { return }
+
         playerNode.scheduleBuffer(outputBuffer, completionHandler: nil)
     }
+
 
 
     public func stopPlayback() {
