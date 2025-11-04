@@ -55,10 +55,10 @@ public class AudioManager {
     
     public func setupEngine() {
         print("Setting up audio engine...")
-        
+
         // CRITICAL FIX: Only configure audio session here, once
         configureAudioSession()
-        
+
         // CRITICAL FIX: Only disconnect if engine was previously setup
         if isEngineSetup {
             if audioEngine.attachedNodes.contains(playerNode) {
@@ -66,34 +66,45 @@ public class AudioManager {
                 audioEngine.detach(playerNode)
             }
         }
-        
+
         // Reset engine if running
         if audioEngine.isRunning {
             audioEngine.stop()
         }
-        
+
         guard let audioFormat = audioFormat else {
             print("❌ Cannot setup engine: audioFormat not initialized")
             return
         }
-        
+
         // Attach and connect nodes
         audioEngine.attach(playerNode)
         audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: audioFormat)
         audioEngine.connect(audioEngine.mainMixerNode, to: audioEngine.outputNode, format: nil) // Use default format
         audioEngine.mainMixerNode.outputVolume = 1.0
-        
+
+        // Start engine and enable AEC
         // Start engine and enable AEC
         do {
             if enableAEC {
                 try inputNode.setVoiceProcessingEnabled(true)
                 print("✅ Voice processing (AEC) enabled")
             }
-            
+
             try audioEngine.start()
             isEngineSetup = true
             print("✅ Audio engine started successfully")
-            
+
+            // 🔥 Warm-up fix: prime player node with silence
+            if let format = audioFormat {
+                let silentBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
+                silentBuffer.frameLength = 4800
+                memset(silentBuffer.floatChannelData!.pointee, 0, Int(4800 * MemoryLayout<Float>.size))
+                playerNode.scheduleBuffer(silentBuffer, completionHandler: nil)
+                playerNode.play()
+                print("✅ Warm-up silent buffer played to stabilize engine")
+            }
+
         } catch {
             print("❌ Failed to start audio engine: \(error)")
             errorPublisher.send("Engine start error: \(error.localizedDescription)")
@@ -103,7 +114,7 @@ public class AudioManager {
         }
     }
 
-    private func configureAudioSession() {
+        private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         
         do {
@@ -114,10 +125,8 @@ public class AudioManager {
             print("✅ Audio category set successfully")
             
             // Set preferred settings
-            // Gemini bots stream 24 kHz PCM → match hardware to 24 kHz for smoother startup
-            try session.setPreferredSampleRate(24_000)
+            try session.setPreferredSampleRate(48000.0)
             try session.setPreferredIOBufferDuration(0.01)
-
 
             // Activate session
             try session.setActive(true, options: [.notifyOthersOnDeactivation])
