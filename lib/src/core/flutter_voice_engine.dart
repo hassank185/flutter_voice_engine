@@ -122,6 +122,12 @@ class FlutterVoiceEngine {
     isRecording = false;
   }
 
+  Future<void> softResetPlaybackEngine() async {
+    if (!isInitialized) throw Exception('VoiceEngine not initialized');
+    await _channel.invokeMethod('softResetPlaybackEngine');
+  }
+
+
   Future<void> playAudioChunk(Uint8List data) async {
     if (!isInitialized) throw Exception('VoiceEngine not initialized');
     await _channel.invokeMethod('playAudioChunk', {'audioData': data});
