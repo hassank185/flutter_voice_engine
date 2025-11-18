@@ -106,6 +106,7 @@ class MethodChannelFlutterVoiceEngine extends FlutterVoiceEnginePlatform {
     await methodChannel.invokeMethod('stopRecording');
   }
 
+  @override
   Future<void> softResetPlaybackEngine() async {
     await methodChannel.invokeMethod('softResetPlaybackEngine');
   }
