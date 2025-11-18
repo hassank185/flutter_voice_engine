@@ -20,6 +20,8 @@ class FlutterVoiceEngine {
   StreamController<Map<String, double>>.broadcast();
   final _musicStateController = StreamController<bool>.broadcast();
   final _errorController = StreamController<String>.broadcast();
+  final _engineReadyController = StreamController<bool>.broadcast();
+  Stream<bool> get engineReadyStream => _engineReadyController.stream;
 
   FlutterVoiceEngine() {
     _eventChannel.receiveBroadcastStream().listen(
@@ -56,6 +58,10 @@ class FlutterVoiceEngine {
                 _errorController
                     .add('Invalid music state data: ${event['state']}');
               }
+              break;
+            case 'engine_ready_for_playback':
+              print("Flutter: Engine is warmed up and ready");
+              _engineReadyController.add(true);
               break;
             case 'error':
               final msg = event['message'] as String?;

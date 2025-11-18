@@ -54,12 +54,12 @@ public class AudioManager {
     }
 
     public func setupEngine() {
-        print("Setting up audio engine...")
+        print("🔧 Setting up audio engine...")
 
-        // CRITICAL FIX: Only configure audio session here, once
+        // Configure AVAudioSession (stable formats + converters)
         configureAudioSession()
 
-        // CRITICAL FIX: Only disconnect if engine was previously setup
+        // Detach old playerNode if engine was set up before
         if isEngineSetup {
             if audioEngine.attachedNodes.contains(playerNode) {
                 audioEngine.disconnectNodeOutput(playerNode)
@@ -67,7 +67,7 @@ public class AudioManager {
             }
         }
 
-        // Reset engine if running
+        // Stop engine if previously running
         if audioEngine.isRunning {
             audioEngine.stop()
         }
@@ -77,13 +77,13 @@ public class AudioManager {
             return
         }
 
-        // Attach and connect nodes
+        // Fresh attach/connect
         audioEngine.attach(playerNode)
         audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: audioFormat)
-        audioEngine.connect(audioEngine.mainMixerNode, to: audioEngine.outputNode, format: nil) // Use default format
+        audioEngine.connect(audioEngine.mainMixerNode, to: audioEngine.outputNode, format: nil)
         audioEngine.mainMixerNode.outputVolume = 1.0
 
-        // Start engine and enable AEC
+        // Start engine
         do {
             if enableAEC {
                 try inputNode.setVoiceProcessingEnabled(true)
@@ -94,14 +94,26 @@ public class AudioManager {
             isEngineSetup = true
             print("✅ Audio engine started successfully")
 
+            // 🔥 CRITICAL: Engine warm-up (prevents metallic sound + converter errors)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                guard let self = self else { return }
+                print("🎤 Engine warmed up and safe for playback")
+
+                self.eventSink?([
+                                    "type": "engine_ready_for_playback",
+                                ])
+            }
+
         } catch {
             print("❌ Failed to start audio engine: \(error)")
             errorPublisher.send("Engine start error: \(error.localizedDescription)")
             DispatchQueue.main.async { [weak self] in
-                self?.eventSink?(["type": "error", "message": "Engine start error: \(error.localizedDescription)"])
+                self?.eventSink?(["type": "error",
+                                  "message": "Engine start error: \(error.localizedDescription)"])
             }
         }
     }
+
 
 
     public func softResetPlaybackEngine() {
