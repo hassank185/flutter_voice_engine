@@ -144,11 +144,19 @@ public class AudioManager {
         let session = AVAudioSession.sharedInstance()
 
         do {
-            // Set category first
-            try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.defaultToSpeaker, .mixWithOthers, .allowBluetoothA2DP])
-            print("✅ Audio category set successfully")
+            // -----------------------------
+            // 1) Configure session category
+            // -----------------------------
+            try session.setCategory(
+                .playAndRecord,
+                mode: .spokenAudio,
+                options: [.defaultToSpeaker, .mixWithOthers, .allowBluetoothA2DP]
+            )
+            print("✅ Audio category set")
 
-            // Set preferred settings
+            // ---------------------------------------------
+            // 2) Preferred parameters (we enforce our values)
+            // ---------------------------------------------
             try session.setPreferredSampleRate(48000.0)
             try session.setPreferredIOBufferDuration(0.005)
 
@@ -156,86 +164,61 @@ public class AudioManager {
             try session.setActive(true, options: [.notifyOthersOnDeactivation])
             print("✅ Audio session activated")
 
-            // CRITICAL FIX: Wait for hardware to stabilize and validate
+            // ----------------------------------------------------
+            // 3) Wait for hardware to settle (required on iPhones)
+            // ----------------------------------------------------
             var retries = 0
-            var actualSampleRate: Double = 0
-            var actualInputChannels: Int = 0
-
             repeat {
-                actualSampleRate = session.sampleRate
-                actualInputChannels = session.inputNumberOfChannels
+                let sr = session.sampleRate
+                let ch = session.inputNumberOfChannels
+                if sr > 0 && ch > 0 { break }
 
-                if actualSampleRate > 0 && actualInputChannels > 0 {
-                    break
-                }
-
-                print("⚠️ Waiting for audio hardware to stabilize (attempt \(retries + 1))...")
-                Thread.sleep(forTimeInterval: 0.05) // 50ms delay
+                print("⚠️ Waiting for hardware… attempt \(retries + 1)")
+                Thread.sleep(forTimeInterval: 0.05)
                 retries += 1
             } while retries < 5
 
-            // Validate hardware values before creating formats
-            guard actualSampleRate > 0 && actualInputChannels > 0 else {
-                throw NSError(
-                    domain: "AudioManager",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Invalid audio hardware state: sampleRate=\(actualSampleRate), inputChannels=\(actualInputChannels)"]
-                )
-            }
+            print("📊 Hardware reports: sampleRate=\(session.sampleRate), channels=\(session.inputNumberOfChannels)")
 
-            print("📊 Actual audio session: sampleRate=\(actualSampleRate), inputCh=\(actualInputChannels)")
+            // -------------------------------------------------------------------
+            // 4) ***** THE FIX *****
+            // Always use FIXED STABLE FORMATS (48k → 24k), do NOT use hardware SR
+            // -------------------------------------------------------------------
 
-            // CRITICAL FIX: Create formats based on actual hardware with validation
-            guard let inputFormat = AVAudioFormat(
+            let fixedInputFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
-                sampleRate: actualSampleRate,
+                sampleRate: 48000,
                 channels: 1,
                 interleaved: true
-            ) else {
-                throw NSError(
-                    domain: "AudioManager",
-                    code: -2,
-                    userInfo: [NSLocalizedDescriptionKey: "Failed to create input format"]
-                )
-            }
+            )!
 
-            guard let audioFormat = AVAudioFormat(
+            let fixedAudioFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
-                sampleRate: actualSampleRate,
+                sampleRate: 48000,
                 channels: 2,
                 interleaved: false
-            ) else {
-                throw NSError(
-                    domain: "AudioManager",
-                    code: -2,
-                    userInfo: [NSLocalizedDescriptionKey: "Failed to create audio format"]
-                )
-            }
+            )!
 
-            guard let webSocketFormat = AVAudioFormat(
+            let fixedWebSocketFormat = AVAudioFormat(
                 commonFormat: .pcmFormatInt16,
-                sampleRate: targetSampleRate,
+                sampleRate: 24000,
                 channels: 1,
                 interleaved: true
-            ) else {
-                throw NSError(
-                    domain: "AudioManager",
-                    code: -2,
-                    userInfo: [NSLocalizedDescriptionKey: "Failed to create webSocket format"]
-                )
-            }
+            )!
 
-            // Assign validated formats
-            self.inputFormat = inputFormat
-            self.audioFormat = audioFormat
-            self.webSocketFormat = webSocketFormat
+            // Assign stable DSP pipeline
+            self.inputFormat = fixedInputFormat
+            self.audioFormat = fixedAudioFormat
+            self.webSocketFormat = fixedWebSocketFormat
 
-            print("✅ Audio formats created successfully")
-            print("   Input: \(inputFormat)")
-            print("   Output: \(audioFormat)")
-            print("   WebSocket: \(webSocketFormat)")
+            print("🎵 Using STABLE fixed formats")
+            print("   Input: \(fixedInputFormat)")
+            print("   Output: \(fixedAudioFormat)")
+            print("   WebSocket: \(fixedWebSocketFormat)")
 
-            // Setup converters
+            // -----------------------------
+            // 5) Build converters
+            // -----------------------------
             setupConverters()
 
         } catch {
@@ -246,6 +229,7 @@ public class AudioManager {
             }
         }
     }
+
 
     private func setupConverters() {
         guard let inputFormat = inputFormat,
