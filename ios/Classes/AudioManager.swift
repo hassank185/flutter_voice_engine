@@ -346,28 +346,71 @@ public class AudioManager {
     }
 
     public func playAudioChunk(audioData: Data) throws {
-        guard audioEngine.isRunning, let converter = playbackConverter else {
-            throw NSError(domain: "AudioManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Engine or converter unavailable"])
+        // 🔍 Auto-recovery layer: if ElevenLabs killed our engine/session,
+        // repair everything before throwing.
+        if !audioEngine.isRunning || playbackConverter == nil || webSocketFormat == nil || audioFormat == nil {
+            print("⚠️ [AudioManager] engine/converter unavailable in playAudioChunk, attempting auto-recovery...")
+
+            // Reconfigure audio session + recreate formats + converters
+            setupEngine()        // calls configureAudioSession() inside
+            if playbackConverter == nil {
+                setupConverters()
+            }
+
+            print("📊 [AudioManager] After auto-recovery: " +
+                      "engineRunning=\(audioEngine.isRunning), " +
+                      "hasPlaybackConv=\(playbackConverter != nil), " +
+                      "hasWSFormat=\(webSocketFormat != nil), " +
+                      "hasAudioFormat=\(audioFormat != nil)")
         }
 
-        let frameCount = AVAudioFrameCount(audioData.count / (MemoryLayout<Int16>.size * Int(webSocketFormat!.channelCount)))
+        // Now require everything to be valid
+        guard audioEngine.isRunning,
+              let converter = playbackConverter,
+              let wsFormat = webSocketFormat,
+              let outFormat = audioFormat else {
+            print("❌ [AudioManager] Engine or converter still unavailable after auto-recovery")
+            throw NSError(
+                domain: "AudioManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Engine or converter unavailable (after recovery)"]
+            )
+        }
 
-        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: webSocketFormat!, frameCapacity: frameCount) else {
-            throw NSError(domain: "AudioManager", code: -3, userInfo: [NSLocalizedDescriptionKey: "Failed to create input buffer"])
+        // 🔄 Convert incoming Int16 WebSocket PCM → engine format
+        let channelCount = Int(wsFormat.channelCount)
+        let frameCount = AVAudioFrameCount(
+            audioData.count / (MemoryLayout<Int16>.size * channelCount)
+        )
+
+        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: wsFormat,
+                                                 frameCapacity: frameCount) else {
+            throw NSError(
+                domain: "AudioManager",
+                code: -3,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to create input buffer"]
+            )
         }
 
         inputBuffer.frameLength = frameCount
         audioData.withUnsafeBytes { rawBuffer in
             inputBuffer.int16ChannelData?.pointee.update(
                 from: rawBuffer.baseAddress!.assumingMemoryBound(to: Int16.self),
-                count: Int(frameCount * webSocketFormat!.channelCount)
+                count: Int(frameCount) * channelCount
             )
         }
 
-        let outputFrameCapacity = UInt32(round(Double(frameCount) * audioFormat!.sampleRate / webSocketFormat!.sampleRate))
+        let outputFrameCapacity = UInt32(
+            round(Double(frameCount) * outFormat.sampleRate / wsFormat.sampleRate)
+        )
 
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: audioFormat!, frameCapacity: outputFrameCapacity) else {
-            throw NSError(domain: "AudioManager", code: -4, userInfo: [NSLocalizedDescriptionKey: "Failed to create output buffer"])
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outFormat,
+                                                  frameCapacity: outputFrameCapacity) else {
+            throw NSError(
+                domain: "AudioManager",
+                code: -4,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to create output buffer"]
+            )
         }
 
         var error: NSError?
@@ -376,16 +419,27 @@ public class AudioManager {
             return inputBuffer
         }
 
-        if let error = error { throw error }
+        if let error = error {
+            print("❌ [AudioManager] Playback conversion error: \(error)")
+            throw error
+        }
         if status == .error {
-            throw NSError(domain: "AudioManager", code: -5, userInfo: [NSLocalizedDescriptionKey: "Playback conversion failed"])
+            print("❌ [AudioManager] Playback conversion failed with status .error")
+            throw NSError(
+                domain: "AudioManager",
+                code: -5,
+                userInfo: [NSLocalizedDescriptionKey: "Playback conversion failed"]
+            )
         }
 
+        // ✅ Schedule & play
         playerNode.scheduleBuffer(outputBuffer, completionHandler: nil)
         if !playerNode.isPlaying {
+            print("▶️ [AudioManager] Starting playerNode playback")
             playerNode.play()
         }
     }
+
 
     public func stopPlayback() {
         playerNode.stop()
