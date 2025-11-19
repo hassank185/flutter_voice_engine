@@ -453,28 +453,32 @@ public class AudioManager {
         stopRecording()
         stopPlayback()
 
-        // Stop music
-        queuePlayer.pause()
-        playerLooper?.disableLooping()
-        playlistItems.removeAll()
-        stopEmittingMusicPosition()
+        // ❗ DO NOT STOP MUSIC ❗
+        // queuePlayer.pause()
+        // playerLooper?.disableLooping()
+        // playlistItems.removeAll()
+        // stopEmittingMusicPosition()
 
-        // Stop engine
+        // Stop voice engine only
         if isEngineSetup {
             audioEngine.stop()
             isEngineSetup = false
         }
+
         cancellables.removeAll()
 
-        // Deactivate session
-        do {
-            try AVAudioSession.sharedInstance().setActive(false)
-        } catch {
-            print("Failed to deactivate audio session: \(error)")
+        // Deactivate session ONLY IF no music playing
+        if !musicIsPlaying && queuePlayer.rate == 0 {
+            do {
+                try AVAudioSession.sharedInstance().setActive(false)
+            } catch {
+                print("Failed to deactivate audio session: \(error)")
+            }
         }
 
-        print("AudioManager shutdown complete")
+        print("AudioManager shutdown complete (music preserved)")
     }
+
 
     // New: stop bot and engine, keep music unchanged
     public func stop() {
