@@ -156,29 +156,20 @@ public class AudioManager {
         let session = AVAudioSession.sharedInstance()
 
         do {
-            // -----------------------------
-            // 1) Configure session category
-            // -----------------------------
+            // ✅ Better for mic + AEC
             try session.setCategory(
                 .playAndRecord,
-                mode: .spokenAudio,
-                options: [.defaultToSpeaker, .mixWithOthers, .allowBluetoothA2DP]
+                mode: .voiceChat,
+                options: [.defaultToSpeaker, .allowBluetooth]
             )
             print("✅ Audio category set")
 
-            // ---------------------------------------------
-            // 2) Preferred parameters (we enforce our values)
-            // ---------------------------------------------
             try session.setPreferredSampleRate(48000.0)
             try session.setPreferredIOBufferDuration(0.005)
 
-            // Activate session
             try session.setActive(true, options: [.notifyOthersOnDeactivation])
             print("✅ Audio session activated")
 
-            // ----------------------------------------------------
-            // 3) Wait for hardware to settle (required on iPhones)
-            // ----------------------------------------------------
             var retries = 0
             repeat {
                 let sr = session.sampleRate
@@ -191,11 +182,6 @@ public class AudioManager {
             } while retries < 5
 
             print("📊 Hardware reports: sampleRate=\(session.sampleRate), channels=\(session.inputNumberOfChannels)")
-
-            // -------------------------------------------------------------------
-            // 4) ***** THE FIX *****
-            // Always use FIXED STABLE FORMATS (48k → 24k), do NOT use hardware SR
-            // -------------------------------------------------------------------
 
             let fixedInputFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
@@ -218,7 +204,6 @@ public class AudioManager {
                 interleaved: true
             )!
 
-            // Assign stable DSP pipeline
             self.inputFormat = fixedInputFormat
             self.audioFormat = fixedAudioFormat
             self.webSocketFormat = fixedWebSocketFormat
@@ -228,19 +213,19 @@ public class AudioManager {
             print("   Output: \(fixedAudioFormat)")
             print("   WebSocket: \(fixedWebSocketFormat)")
 
-            // -----------------------------
-            // 5) Build converters
-            // -----------------------------
             setupConverters()
-
         } catch {
             print("❌ Failed to configure audio session: \(error)")
             errorPublisher.send("Audio session error: \(error.localizedDescription)")
             DispatchQueue.main.async { [weak self] in
-                self?.eventSink?(["type": "error", "message": "Audio session error: \(error.localizedDescription)"])
+                self?.eventSink?([
+                                     "type": "error",
+                                     "message": "Audio session error: \(error.localizedDescription)"
+                                 ])
             }
         }
     }
+
 
 
     private func setupConverters() {
@@ -323,8 +308,34 @@ public class AudioManager {
     }
 
     public func startRecording() -> AnyPublisher<Data, Never> {
+        // If LiveKit or another SDK killed the engine/session, recover first.
+        if !audioEngine.isRunning || !isEngineSetup || recordingConverter == nil || webSocketFormat == nil {
+            print("⚠️ startRecording: engine/converter not ready, running setupEngine()")
+            setupEngine()
+        }
+
+        // If we think we're recording but the engine is not running, it's stale.
+        // Reset and allow a fresh tap install.
+        if isRecording && !audioEngine.isRunning {
+            print("⚠️ startRecording: stale isRecording=true while engine stopped. Resetting.")
+            isRecording = false
+            inputNode.removeTap(onBus: 0)
+        }
+
+        // If still recording, just return the same publisher.
         guard !isRecording else {
             print("Already recording")
+            return audioChunkPublisher.eraseToAnyPublisher()
+        }
+
+        // Ensure converter exists after recovery.
+        if recordingConverter == nil {
+            print("⚠️ startRecording: recordingConverter missing, rebuilding converters")
+            setupConverters()
+        }
+
+        guard recordingConverter != nil else {
+            print("❌ startRecording: cannot start, recordingConverter still nil")
             return audioChunkPublisher.eraseToAnyPublisher()
         }
 
@@ -335,11 +346,15 @@ public class AudioManager {
     }
 
     public func stopRecording() {
-        guard isRecording else { return }
+        if !isRecording {
+            return
+        }
+
         isRecording = false
         inputNode.removeTap(onBus: 0)
         print("Recording stopped")
     }
+
 
     public func playAudioChunk(audioData: Data) throws {
         // 🔍 Auto-recovery layer: if ElevenLabs killed our engine/session,
@@ -506,11 +521,19 @@ public class AudioManager {
     public func handleConfigurationChange() {
         print("⚠️ Audio engine configuration changed")
 
-        if !audioEngine.isRunning && isEngineSetup {
+        // If we were recording and the engine got stopped, clear stale state.
+        if isRecording && !audioEngine.isRunning {
+            print("⚠️ Configuration change while recording: stopping stale recording state")
+            stopRecording()
+        }
+
+        // If engine was set up but is no longer running, rebuild.
+        if isEngineSetup && !audioEngine.isRunning {
             print("Engine stopped, restarting...")
             setupEngine()
         }
     }
+
 
     // Music methods remain the same...
     public func emitMusicIsPlaying() {
